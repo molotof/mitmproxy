@@ -25,8 +25,6 @@ EVENTLOG_SIZE = 500
 class Stop(Exception): pass
 
 
-
-
 class _PathCompleter:
     def __init__(self, _testing=False):
         """
@@ -186,6 +184,9 @@ class StatusBar(common.WWrap):
 
         if self.master.debug:
             r.append("[lt:%0.3f]"%self.master.looptime)
+
+        if self.master.stream:
+            r.append("[W:%s]"%self.master.stream_path)
 
         return r
 
@@ -353,6 +354,7 @@ class ConsoleMaster(flow.FlowMaster):
     def __init__(self, server, options):
         flow.FlowMaster.__init__(self, server, ConsoleState())
         self.looptime = 0
+        self.stream_path = None
         self.options = options
 
         for i in options.replacements:
@@ -399,6 +401,21 @@ class ConsoleMaster(flow.FlowMaster):
             if err:
                 print >> sys.stderr, "Script load error:", err
                 sys.exit(1)
+
+        if options.wfile:
+            err = self.start_stream(options.wfile)
+            if err:
+                print >> sys.stderr, "Script load error:", err
+                sys.exit(1)
+
+    def start_stream(self, path):
+        path = os.path.expanduser(path)
+        try:
+            f = file(path, "wb")
+            flow.FlowMaster.start_stream(self, f)
+        except IOError, v:
+            return str(v)
+        self.stream_path = path
 
     def run_script_once(self, path, f):
         if not path:
@@ -545,7 +562,7 @@ class ConsoleMaster(flow.FlowMaster):
     def focus_current(self):
         if self.currentflow:
             try:
-                self.flow_list_walker.set_focus(self.state.index(self.currentflow))
+                self.flow_list_walker.set_focus(self.state.view.index(self.currentflow))
             except (IndexError, ValueError):
                 pass
 
@@ -905,7 +922,7 @@ class ConsoleMaster(flow.FlowMaster):
 
     def shutdown(self):
         self.state.killall(self)
-        controller.Master.shutdown(self)
+        flow.FlowMaster.shutdown(self)
 
     def sync_list_view(self):
         self.flow_list_walker._modified()

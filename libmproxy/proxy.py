@@ -67,11 +67,9 @@ class RequestReplayThread(threading.Thread):
                 self.flow.request, httpversion, code, msg, headers, content, server.cert
             )
             response._send(self.masterq)
-        except (ProxyError, http.HttpError), v:
-            err = flow.Error(self.flow.request, v.msg)
+        except (ProxyError, http.HttpError, tcp.NetLibError), v:
+            err = flow.Error(self.flow.request, str(v))
             err._send(self.masterq)
-        except tcp.NetLibError, v:
-            raise ProxyError(502, v)
 
 
 class ServerConnection(tcp.TCPClient):
@@ -160,7 +158,10 @@ class ProxyHandler(tcp.BaseHandler):
 
             app = self.server.apps.get(request)
             if app:
-                app.serve(request, self.wfile)
+                err = app.serve(request, self.wfile)
+                self.log(cc, "Error in wsgi app.", err.split("\n"))
+                if err:
+                    return
             else:
                 request = request._send(self.mqueue)
                 if request is None:
@@ -199,11 +200,11 @@ class ProxyHandler(tcp.BaseHandler):
                 # disconnect.
                 if http.response_connection_close(response.httpversion, response.headers):
                     return
-        except (IOError, ProxyError, http.HttpError), e:
-            if isinstance(e, IOError):
-                cc.error = str(e)
-            else:
+        except (IOError, ProxyError, http.HttpError, tcp.NetLibDisconnect), e:
+            if hasattr(e, "code"):
                 cc.error = "%s: %s"%(e.code, e.msg)
+            else:
+                cc.error = str(e)
 
             if request:
                 err = flow.Error(request, cc.error)
@@ -236,7 +237,10 @@ class ProxyHandler(tcp.BaseHandler):
         else:
             sans = []
             if not self.config.no_upstream_cert:
-                cert = certutils.get_remote_cert(host, port, sni)
+                try:
+                    cert = certutils.get_remote_cert(host, port, sni)
+                except tcp.NetLibError, v:
+                    raise ProxyError(502, "Unable to get remote cert: %s"%str(v))
                 sans = cert.altnames
                 host = cert.cn.decode("utf8").encode("idna")
             ret = certutils.dummy_cert(self.config.certdir, self.config.cacert, host, sans)
@@ -425,7 +429,11 @@ class AppRegistry:
         """
             Returns an WSGIAdaptor instance if request matches an app, or None.
         """
-        return self.apps.get((request.host, request.port), None)
+        if (request.host, request.port) in self.apps:
+            return self.apps[(request.host, request.port)]
+        if "host" in request.headers:
+            host = request.headers["host"][0]
+            return self.apps.get((host, request.port), None)
 
 
 class DummyServer:

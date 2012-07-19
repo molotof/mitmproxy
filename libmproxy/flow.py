@@ -17,7 +17,7 @@
     This module provides more sophisticated flow tracking. These match requests
     with their responses, and provide filtering and interception facilities.
 """
-import hashlib, Cookie, cookielib, copy, re, urlparse
+import hashlib, Cookie, cookielib, copy, re, urlparse, os
 import time
 import tnetstring, filt, script, utils, encoding, proxy
 from email.utils import parsedate_tz, formatdate, mktime_tz
@@ -359,7 +359,7 @@ class Request(HTTPMsg):
         """
             Returns a URL string, constructed from the Request's URL compnents.
         """
-        return utils.unparse_url(self.scheme, self.host.decode("idna"), self.port, self.path)
+        return utils.unparse_url(self.scheme, self.host.decode("idna"), self.port, self.path).encode('ascii')
 
     def set_url(self, url):
         """
@@ -538,7 +538,7 @@ class Response(HTTPMsg):
         self.headers = ODictCaseless._from_state(state["headers"])
         self.content = state["content"]
         self.timestamp = state["timestamp"]
-        self.cert = state["cert"]
+        self.cert = certutils.SSLCert.from_pem(state["cert"]) if state["cert"] else None
 
     def _get_state(self):
         return dict(
@@ -1200,6 +1200,8 @@ class FlowMaster(controller.Master):
         self.refresh_server_playback = False
         self.replacehooks = ReplaceHooks()
 
+        self.stream = None
+
     def add_event(self, e, level="info"):
         """
             level: info, error
@@ -1359,7 +1361,7 @@ class FlowMaster(controller.Master):
         if self.stickycookie_state:
             self.stickycookie_state.handle_response(f)
 
-    def replay_request(self, f):
+    def replay_request(self, f, block=False):
         """
             Returns None if successful, or error message if not.
         """
@@ -1380,6 +1382,8 @@ class FlowMaster(controller.Master):
                     self.masterq,
                 )
             rt.start() # pragma: no cover
+            if block:
+                rt.join()
 
     def run_script_hook(self, name, *args, **kwargs):
         if self.script and not self.pause_scripts:
@@ -1415,21 +1419,35 @@ class FlowMaster(controller.Master):
 
     def handle_response(self, r):
         f = self.state.add_response(r)
-        self.replacehooks.run(f)
         if f:
+            self.replacehooks.run(f)
             self.run_script_hook("response", f)
-        if self.client_playback:
-            self.client_playback.clear(f)
-        if not f:
-            r._ack()
-        if f:
+            if self.client_playback:
+                self.client_playback.clear(f)
             self.process_new_response(f)
+            if self.stream:
+                self.stream.add(f)
+        else:
+            r._ack()
         return f
 
     def shutdown(self):
         if self.script:
             self.load_script(None)
         controller.Master.shutdown(self)
+        if self.stream:
+            for i in self.state._flow_list:
+                if not i.response:
+                    self.stream.add(i)
+            self.stream.fo.close()
+            self.stop_stream()
+
+    def start_stream(self, fp):
+        self.stream = FlowWriter(fp)
+
+    def stop_stream(self):
+        self.stream = None
+
 
 
 class FlowWriter:

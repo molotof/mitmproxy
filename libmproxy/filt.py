@@ -24,6 +24,12 @@
         Patterns are matched against "name: value" strings. Field names are
         all-lowercase.
 
+        ~a          Asset content-type in response. Asset content types are:
+                        text/javascript
+                        application/x-javascript
+                        text/css
+                        image/*
+                        application/x-shockwave-flash
         ~h rex      Header line in either request or response
         ~hq rex     Header in request
         ~hs rex     Header in response
@@ -33,6 +39,7 @@
         ~bq rex     Expression in the body of response
         ~t rex      Shortcut for content-type header.
 
+        ~d rex      Request domain
         ~m rex      Method
         ~u rex      URL
         ~c CODE     Response code.
@@ -94,6 +101,24 @@ def _check_content_type(expr, o):
     return False
 
 
+class FAsset(_Action):
+    code = "a"
+    help = "Match asset in response: CSS, Javascript, Flash, images."
+    ASSET_TYPES = [
+        "text/javascript",
+        "application/x-javascript",
+        "text/css",
+        "image/.*",
+        "application/x-shockwave-flash"
+    ]
+    def __call__(self, f):
+        if f.response:
+            for i in self.ASSET_TYPES:
+                if _check_content_type(i, f.response):
+                    return True
+        return False
+
+
 class FContentType(_Rex):
     code = "t"
     help = "Content-type header"
@@ -114,7 +139,7 @@ class FRequestContentType(_Rex):
 
 class FResponseContentType(_Rex):
     code = "ts"
-    help = "Request Content-Type header"
+    help = "Response Content-Type header"
     def __call__(self, f):
         if f.response:
             return _check_content_type(self.expr, f.response)
@@ -180,6 +205,13 @@ class FMethod(_Rex):
     help = "Method"
     def __call__(self, f):
         return bool(re.search(self.expr, f.request.method, re.IGNORECASE))
+
+
+class FDomain(_Rex):
+    code = "d"
+    help = "Domain"
+    def __call__(self, f):
+        return bool(re.search(self.expr, f.request.host, re.IGNORECASE))
 
 
 class FUrl(_Rex):
@@ -250,6 +282,7 @@ class FNot(_Token):
 filt_unary = [
     FReq,
     FResp,
+    FAsset,
     FErr
 ]
 filt_rex = [
@@ -260,6 +293,7 @@ filt_rex = [
     FBodResponse,
     FBod,
     FMethod,
+    FDomain,
     FUrl,
     FRequestContentType,
     FResponseContentType,
@@ -313,7 +347,7 @@ bnf = _make()
 def parse(s):
     try:
         return bnf.parseString(s, parseAll=True)[0]
-    except pp.ParseException:
+    except pp.ParseException, v:
         return None
     except ValueError:
         return None

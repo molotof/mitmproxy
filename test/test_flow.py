@@ -1,10 +1,8 @@
-import Queue, time
+import Queue, time, os.path
 from cStringIO import StringIO
 import email.utils
 from libmproxy import filt, flow, controller, utils, tnetstring
-from netlib import certutils
 import tutils
-import libpry
 
 
 class TestStickyCookieState:
@@ -145,7 +143,7 @@ class TestServerPlaybackState:
         s = flow.ServerPlaybackState(None, [r, r2], False, True)
 
         assert s.count() == 2
-        n = s.next_flow(r)
+        s.next_flow(r)
         assert s.count() == 2
 
 
@@ -191,6 +189,13 @@ class TestFlow:
         assert f.modified()
         f.revert()
         assert f.request.content == "foo"
+
+    def test_backup_idempotence(self):
+        f = tutils.tflow_full()
+        f.backup()
+        f.revert()
+        f.backup()
+        f.revert()
 
     def test_getset_state(self):
         f = tutils.tflow()
@@ -682,6 +687,32 @@ class TestFlowMaster:
         fm.handle_request(f.request)
         assert f.request.headers["authorization"] == ["foo"]
 
+    def test_stream(self):
+        with tutils.tmpdir() as tdir:
+            p = os.path.join(tdir, "foo")
+            def r():
+                r = flow.FlowReader(open(p))
+                return list(r.stream())
+
+            s = flow.State()
+            fm = flow.FlowMaster(None, s)
+            tf = tutils.tflow_full()
+
+            fm.start_stream(file(p, "ab"))
+            fm.handle_request(tf.request)
+            fm.handle_response(tf.response)
+            fm.stop_stream()
+
+            assert r()[0].response
+
+            tf = tutils.tflow_full()
+            fm.start_stream(file(p, "ab"))
+            fm.handle_request(tf.request)
+            fm.shutdown()
+
+            assert not r()[1].response
+
+
 class TestRequest:
     def test_simple(self):
         h = flow.ODictCaseless()
@@ -952,117 +983,6 @@ class TestClientConnect:
 
         c3 = c.copy()
         assert c3 == c
-
-
-class TestODict:
-    def setUp(self):
-        self.od = flow.ODict()
-
-    def test_str_err(self):
-        h = flow.ODict()
-        tutils.raises(ValueError, h.__setitem__, "key", "foo")
-
-    def test_dictToHeader1(self):
-        self.od.add("one", "uno")
-        self.od.add("two", "due")
-        self.od.add("two", "tre")
-        expected = [
-            "one: uno\r\n",
-            "two: due\r\n",
-            "two: tre\r\n",
-            "\r\n"
-        ]
-        out = repr(self.od)
-        for i in expected:
-            assert out.find(i) >= 0
-
-    def test_dictToHeader2(self):
-        self.od["one"] = ["uno"]
-        expected1 = "one: uno\r\n"
-        expected2 = "\r\n"
-        out = repr(self.od)
-        assert out.find(expected1) >= 0
-        assert out.find(expected2) >= 0
-
-    def test_match_re(self):
-        h = flow.ODict()
-        h.add("one", "uno")
-        h.add("two", "due")
-        h.add("two", "tre")
-        assert h.match_re("uno")
-        assert h.match_re("two: due")
-        assert not h.match_re("nonono")
-
-    def test_getset_state(self):
-        self.od.add("foo", 1)
-        self.od.add("foo", 2)
-        self.od.add("bar", 3)
-        state = self.od._get_state()
-        nd = flow.ODict._from_state(state)
-        assert nd == self.od
-
-    def test_in_any(self):
-        self.od["one"] = ["atwoa", "athreea"]
-        assert self.od.in_any("one", "two")
-        assert self.od.in_any("one", "three")
-        assert not self.od.in_any("one", "four")
-        assert not self.od.in_any("nonexistent", "foo")
-        assert not self.od.in_any("one", "TWO")
-        assert self.od.in_any("one", "TWO", True)
-
-    def test_copy(self):
-        self.od.add("foo", 1)
-        self.od.add("foo", 2)
-        self.od.add("bar", 3)
-        assert self.od == self.od.copy()
-
-    def test_del(self):
-        self.od.add("foo", 1)
-        self.od.add("Foo", 2)
-        self.od.add("bar", 3)
-        del self.od["foo"]
-        assert len(self.od.lst) == 2
-
-    def test_replace(self):
-        self.od.add("one", "two")
-        self.od.add("two", "one")
-        assert self.od.replace("one", "vun") == 2
-        assert self.od.lst == [
-            ["vun", "two"],
-            ["two", "vun"],
-        ]
-
-    def test_get(self):
-        self.od.add("one", "two")
-        assert self.od.get("one") == ["two"]
-        assert self.od.get("two") == None
-
-
-class TestODictCaseless:
-    def setUp(self):
-        self.od = flow.ODictCaseless()
-
-    def test_override(self):
-        o = flow.ODictCaseless()
-        o.add('T', 'application/x-www-form-urlencoded; charset=UTF-8')
-        o["T"] = ["foo"]
-        assert o["T"] == ["foo"]
-
-    def test_case_preservation(self):
-        self.od["Foo"] = ["1"]
-        assert "foo" in self.od
-        assert self.od.items()[0][0] == "Foo"
-        assert self.od.get("foo") == ["1"]
-        assert self.od.get("foo", [""]) == ["1"]
-        assert self.od.get("Foo", [""]) == ["1"]
-        assert self.od.get("xx", "yy") == "yy"
-
-    def test_del(self):
-        self.od.add("foo", 1)
-        self.od.add("Foo", 2)
-        self.od.add("bar", 3)
-        del self.od["foo"]
-        assert len(self.od) == 1
 
 
 def test_decoded():
